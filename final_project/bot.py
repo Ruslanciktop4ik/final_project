@@ -2,18 +2,19 @@ import telebot
 import sqlite3
 import json
 import os
+from telebot import types
 
-TOKEN = "8109746141:AAGN8QXEn614ZLDoZQJugLkiMeR8Dd4exhM"  # вставь сюда токен
+TOKEN = "8109746141:AAGN8QXEn614ZLDoZQJugLkiMeR8Dd4exhM"
 bot = telebot.TeleBot(TOKEN)
 
 # Список ID админов
-ADMINS = [2069586509]  # <-- вставь сюда свои ID админов
+ADMINS = [2069586509]  
 
 # Загружаем FAQ
 with open("faq.json", encoding="utf-8") as f:
     faq = json.load(f)
 
-# Инициализация базы данных
+# ---------- БАЗА ДАННЫХ ----------
 def init_db():
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
@@ -31,7 +32,6 @@ def init_db():
 
 init_db()
 
-# Сохранение запроса в базу
 def save_request(user_id, username, message):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
@@ -42,19 +42,64 @@ def save_request(user_id, username, message):
     conn.commit()
     conn.close()
 
-# Команда для получения ID (удобно для админов)
-@bot.message_handler(commands=["getid"])
-def get_id(message):
-    bot.send_message(message.chat.id, f"Твой ID: {message.from_user.id}")
+# ---------- КНОПКИ ----------
+def main_menu(user_id):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    ask_btn = types.KeyboardButton("✍ Задать вопрос")
+    keyboard.add(ask_btn)
 
-# Команда для отправки запросов админам
-@bot.message_handler(commands=["requests"])
-def send_requests_command(message):
+    if user_id in ADMINS:  # Только админам
+        admin_btn = types.KeyboardButton("🛠 Панель админа")
+        keyboard.add(admin_btn)
+
+    return keyboard
+
+def admin_panel():
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.add(types.InlineKeyboardButton("📂 Посмотреть запросы", callback_data="admin_requests"))
+    keyboard.add(types.InlineKeyboardButton("🗑 Очистить базу", callback_data="admin_clear"))
+    keyboard.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_back"))
+    return keyboard
+
+# ---------- КОМАНДЫ ----------
+@bot.message_handler(commands=["start"])
+def start(message):
+    bot.send_message(
+        message.chat.id, 
+        "Привет! 👋 Я бот-помощник. Выберите действие:", 
+        reply_markup=main_menu(message.from_user.id)
+    )
+
+# ---------- ОБРАБОТКА КНОПОК ----------
+@bot.message_handler(func=lambda m: m.text == "✍ Задать вопрос")
+def ask_question(message):
+    bot.send_message(message.chat.id, "Введите ваш вопрос текстом или отправьте голосовое сообщение.")
+
+@bot.message_handler(func=lambda m: m.text == "🛠 Панель админа")
+def show_admin_panel(message):
     if message.from_user.id not in ADMINS:
-        bot.send_message(message.chat.id, "У вас нет прав для этой команды.")
+        bot.send_message(message.chat.id, "У вас нет прав для панели администратора.")
         return
-    send_requests_to_admin(message.chat.id)
+    bot.send_message(message.chat.id, "Добро пожаловать в панель администратора:", reply_markup=admin_panel())
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
+def handle_admin_actions(call):
+    if call.from_user.id not in ADMINS:
+        bot.answer_callback_query(call.id, "Нет доступа")
+        return
+
+    if call.data == "admin_requests":
+        send_requests_to_admin(call.message.chat.id)
+    elif call.data == "admin_clear":
+        clear_requests(call.message)
+    elif call.data == "admin_back":
+        bot.send_message(
+            call.message.chat.id, 
+            "Вы вернулись в главное меню:", 
+            reply_markup=main_menu(call.from_user.id)
+        )
+
+# ---------- ЗАПРОСЫ ДЛЯ АДМИНОВ ----------
 def send_requests_to_admin(chat_id):
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
@@ -78,13 +123,7 @@ def send_requests_to_admin(chat_id):
         else:
             bot.send_message(chat_id, f"Запрос от @{username} ({ts}): {msg}")
 
-# Команда для очистки базы запросов
-@bot.message_handler(commands=["clear_requests"])
 def clear_requests(message):
-    if message.from_user.id not in ADMINS:
-        bot.send_message(message.chat.id, "У вас нет прав для этой команды.")
-        return
-
     conn = sqlite3.connect("database.db")
     cursor = conn.cursor()
     cursor.execute("DELETE FROM requests")
@@ -93,22 +132,22 @@ def clear_requests(message):
 
     bot.send_message(message.chat.id, "Все запросы успешно удалены из базы.")
 
-# Обработка текстовых сообщений
+# ---------- ТЕКСТ ----------
 @bot.message_handler(content_types=["text"])
 def handle_text(message):
-    # Игнорируем команды (кроме /requests и /clear_requests), чтобы не сохранять их как обычные сообщения
     if message.text.startswith("/"):
-        bot.send_message(message.chat.id, "Неизвестная команда или недостаточно прав.")
-        return
+        return  # команды отдельно обрабатываются
 
     user_text = message.text.strip()
+    # Если вопрос есть в FAQ → отвечаем
     if user_text in faq:
         bot.send_message(message.chat.id, f"Ответ: {faq[user_text]}")
     else:
+        # Если нет → сохраняем в базу
         save_request(message.from_user.id, message.from_user.username, user_text)
         bot.send_message(message.chat.id, "Извините, ответа на этот вопрос нет. Мы передадим его специалисту.")
 
-# Обработка голосовых сообщений
+# ---------- ГОЛОС ----------
 @bot.message_handler(content_types=["voice"])
 def handle_voice(message):
     file_info = bot.get_file(message.voice.file_id)
@@ -123,6 +162,5 @@ def handle_voice(message):
     save_request(message.from_user.id, message.from_user.username, f"Голосовое сообщение: {file_path}")
     bot.send_message(message.chat.id, "Ваш голосовой вопрос сохранён. Специалист его прослушает.")
 
+# ---------- СТАРТ ----------
 bot.polling()
-
-        
